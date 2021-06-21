@@ -1,9 +1,3 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[ ]:
-
-
 #Required libraries
 import mne
 import numpy as np
@@ -16,10 +10,24 @@ import pandas as pd
 import gzip
 from scipy.signal import filtfilt, butter
 import pickle
-from pyriemann.estimation import Covariances
-from pyriemann.utils.mean import mean_riemann
-from pyriemann.utils.distance import distance_riemann
-from sklearn.model_selection import KFold
+#from pyriemann.estimation import Covariances
+#from pyriemann.utils.distance import distance_riemann,mean_riemann
+from estimation import covariances
+from riemannian_geometry import mean_riemann, distance_riemann
+from itertools import combinations,product
+from tqdm import tqdm
+
+def random_selection(n,p,q):
+    res = []
+    i=0
+    while i< q:
+        element = list(np.random.randint(low = 0, high = n, size = p))
+        if not(element in res):
+            i +=1
+            res.append(element)
+    return res
+            
+            
 
 class SSVEP():
     
@@ -159,7 +167,8 @@ class SSVEP():
     
     
     def build_covariances(self,extended_trials,estimator='scm'):
-        cov_ext_trials = Covariances(estimator=estimator).transform(extended_trials)
+        #cov_ext_trials = Covariances(estimator=estimator).transform(extended_trials)
+        cov_ext_trials = covariances(extended_trials, estimator=estimator)
         return cov_ext_trials
     
     def GeometricCenters(self,x_train,y_train):
@@ -185,25 +194,49 @@ class SSVEP():
                 accuracies.append(1)
             else: accuracies.append(0)
         accuracy_ = 100.*np.array(accuracies).sum()/len(y)
-        return accuracy_
-    
+        return accuracy_    
 
 
-    def CovGeoMDM(self,n_splits,shuffle):
+    def CovGeoMDM(self,k,estimator="scm",max_folds=10):
         #with cross-validation
         extended_trials, labels = self.extended_trials_and_labels_selection()
-        cov_ext_trials = self.build_covariances(extended_trials)
+        cov_ext_trials = self.build_covariances(extended_trials,estimator)
+        #S = cov_ext_trials[0,:,:]
+        #print(S.dtype)
+        #print(np.linalg.pinv(S).dtype)
+        n_classes = len(self.frequencies) + 1
         
-        kf = KFold(n_splits=n_splits, shuffle=shuffle)
+        classes_index = { i :[] for i in range(n_classes)}     
+        for j in range(len(labels)) : 
+            classes_index[labels[j]].append(j)
+
+        classes_index_comb = { i :list(combinations(classes_index[i],k)) for i in range(n_classes)} 
+        n_folds_per_class = len(classes_index_comb[0]) #=C(k,8*nb_records)
+
+        possible_train_folds_indx = random_selection(n_folds_per_class,n_classes,max_folds)
+        
+        trains,tests = [],[]
+        for n in range(max_folds):
+            train,test = [],[]
+            l = possible_train_folds_indx[n]
+            for i in range(n_classes):
+                train.extend(classes_index_comb[i][l[i]])
+            for j in range(len(labels)):
+                if not( j in train):
+                    test.append(j)
+            trains.append(train)
+            tests.append(test)
+
         train_accuracy, test_accuracy = [], []
-        for train_index , test_index in kf.split(labels):
+
+        for n in tqdm(range(max_folds)):
             x_train,x_test,y_train,y_test = [],[],[],[]
 
-            for i in train_index:
+            for i in trains[n]:
                 x_train.append(cov_ext_trials[i,:,:])
                 y_train.append(labels[i])
 
-            for i in test_index:
+            for i in tests[n]:
                 x_test.append(cov_ext_trials[i,:,:])
                 y_test.append(labels[i])
 
@@ -215,8 +248,9 @@ class SSVEP():
             train_accuracy.append(self.accuracy(x_train,y_train,cov_centers))
             test_accuracy.append(self.accuracy(x_test,y_test,cov_centers))
 
+
         train_accuracy = np.asarray(train_accuracy)
         test_accuracy = np.asarray(test_accuracy)
-
+        
         return train_accuracy,test_accuracy
 
