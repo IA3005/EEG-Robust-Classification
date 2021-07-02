@@ -1,5 +1,6 @@
 #Required libraries
 import mne
+from mne import Epochs,find_events
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy
@@ -38,9 +39,9 @@ def SsvepLoading(data_path):
     for s in range(len(subj_list)):
         subj = subj_list[s]
         record_all = os.listdir(data_path+subj+'/')
-        n = len(record_all)//4 #number of records of a given subject
-        for i in range(n):
-            records[s].append(record_all[i*4][:28])
+        for file in record_all:
+            if file[len(file)-8:]=="_raw.fif":
+                records[s].append(file[:len(file)-8])
     return subj_list,records
  
 
@@ -64,7 +65,7 @@ def filter_bandpass(signal, lowcut, highcut, fs, order=4, filttype='forward-back
 class TrialsBuilding():
     
     
-    def __init__(self,data_path,records,subj_list,subject,nb_classes):
+    def __init__(self,data_path,records,subj_list,subject,nb_classes,tmin,tmax,freq_band):
         self.records = records
         self.data_path = data_path
         self.subj_list = subj_list
@@ -73,41 +74,54 @@ class TrialsBuilding():
         assert 0<= self.subject <len(self.subj_list),"The selected subject does not exist in the dataset"
         self.nb_total_sessions = len(self.records[self.subject])
         #experimental setup
-        self.tmin=2
-        self.tmax=5
+        self.tmin=tmin
+        self.tmax=tmax
         self.sfreq = 256
-        self.freq_band=0.1
+        self.freq_band=freq_band
         self.frequencies= [13,17,21]
         if self.nb_classes==4:
             self.event_code = [33024,33025,33026,33027]
-            self.names=['resting','stim13','stim21','stim17']
+            #self.names=['resting','stim13','stim21','stim17']
         else:
             self.event_code = [33025,33026,33027]
-            self.names=['stim13','stim21','stim17']
+            #self.names=['stim13','stim21','stim17']
         self.channels = np.array(['Oz','O1','O2','PO3','POz','PO7','PO8','PO4'])
         
         
     def load_single_session(self,subject,session):
         chosen_subject = self.subj_list[subject]
         fname = chosen_subject+'/'+self.records[subject][session]
-        with gzip.open(self.data_path + fname + '.pz', 'rb') as f:
-            o = pickle.load(f, encoding='latin1')
-        raw_signal = o['raw_signal'].T
-        event_pos = o['event_pos'].reshape((o['event_pos'].shape[0]))
-        event_type = o['event_type'].reshape((o['event_type'].shape[0]))
-        return raw_signal,event_pos,event_type
+        if os.path.exists(self.data_path + fname + '.pz'): 
+            with gzip.open(self.data_path + fname + '.pz', 'rb') as f:
+                o = pickle.load(f, encoding='latin1')
+            raw_signal = o['raw_signal'].T
+            event_pos = o['event_pos'].reshape((o['event_pos'].shape[0]))
+            event_type = o['event_type'].reshape((o['event_type'].shape[0]))
+            data_type = "pz"
+        else:
+            raw = mne.io.read_raw_fif(self.data_path + fname + '_raw.fif',preload=True)
+            raw_signal = raw.get_data()
+            raw_signal = raw_signal[:raw_signal.shape[0]-1,:]
+            events = mne.find_events(raw)
+            event_pos = events.T[0]
+            event_type = events.T[2]
+            data_type = "fif"
+        return raw_signal,event_pos,event_type,data_type
     
     
-    def make_extended_trials_single_session(self,raw_signal,event_pos,event_type):
-        ext_signal = np.empty_like(raw_signal[0,:])    
+    def make_extended_trials_single_session(self,raw_signal,event_pos,event_type,data_type):
+        ext_signal = np.empty_like(raw_signal[0,:])    #(1,n)
         for f in self.frequencies:
             ext_signal = np.vstack((ext_signal, filter_bandpass(raw_signal, f-self.freq_band,
                                                                      f+self.freq_band, fs=self.sfreq)))
         ext_signal = ext_signal[1:,:]
         
         ext_trials = list()
-        for i in range(1,len(event_type)):
-            boolean = (event_type[i] == 32779) and (event_type[i-1] in self.event_code) # start of a trial
+        for i in range(len(event_type)):
+            if data_type=="pz":
+                boolean = (event_type[i] == 32779) and (i>0) and (event_type[i-1] in self.event_code) # start of a trial
+            if data_type=="fif":
+                boolean = True
             if boolean: 
                 t = event_pos[i]
                 start = t + self.tmin*self.sfreq
@@ -118,14 +132,39 @@ class TrialsBuilding():
                                     ext_trials.shape[1], 1), (1, 1, ext_trials.shape[2]))
         return ext_trials
     
+    def make_extended_trials_single_session_bis(self,raw_signal,event_pos,event_type,data_type):
+        raw_trials = []  
+        for i in range(len(event_type)):
+            if data_type=="pz":
+                boolean = (event_type[i] == 32779) and (i>0) and (event_type[i-1] in self.event_code) # start of a trial
+            if data_type=="fif":
+                boolean = True
+            if boolean: 
+                t = event_pos[i]
+                start = t + self.tmin*self.sfreq
+                stop  = t + self.tmax*self.sfreq
+                raw_trials.append(raw_signal[:, start:stop])
         
-    def make_labels_single_session(self,event_type):
+        ext_trials = np.zeros((len(raw_trials),len(self.frequencies)*raw_trials[0].shape[0],raw_trials[0].shape[1]))
+        for i in range(len(raw_trials)):
+            for j in range(len(self.frequencies)):
+                f = self.frequencies[j]
+                ext_trials[i,j*raw_trials[0].shape[0]:(j+1)*raw_trials[0].shape[0],:] = filter_bandpass(raw_trials[i], f-self.freq_band,
+                                                                                                        f+self.freq_band, fs=self.sfreq) 
+        return ext_trials
+    
+        
+    def make_labels_single_session(self,event_type,data_type):
         labels = []
-        n_events = len(self.event_code)
         for e in event_type:
-            for i in range(n_events):
-                if e==self.event_code[i]:
-                    labels.append(i)
+            if data_type=="pz":
+                for i in range(self.nb_classes):
+                    if e==self.event_code[i]:
+                        labels.append(i)
+            if data_type=="fif":
+                event_idx={1:0,2:1,3:3,4:2}  #resting = 1, 13Hz = 2, 21Hz = 3, 17Hz = 4
+                if (self.nb_classes==4) or ((self.nb_classes==3) and (e!=1)):
+                    labels.append(event_idx[e])
         return labels
     
     
@@ -134,9 +173,9 @@ class TrialsBuilding():
         labels_all_sessions = [] #list of length 32*total_nb_sessions
         
         for session in range(len(self.records[self.subject])):
-            raw_signal,event_pos,event_type = self.load_single_session(self.subject,session)
-            ext_trial_single = self.make_extended_trials_single_session(raw_signal,event_pos,event_type)
-            labels = self.make_labels_single_session(event_type)
+            raw_signal,event_pos,event_type,data_type = self.load_single_session(self.subject,session)
+            ext_trial_single = self.make_extended_trials_single_session(raw_signal,event_pos,event_type,data_type)
+            labels = self.make_labels_single_session(event_type,data_type)
             ext_trials_all_sessions.append(ext_trial_single)
             labels_all_sessions.extend(labels) 
         
@@ -188,7 +227,18 @@ class Classify():
         if self.method=="TangentSpace":
             return Tangent_Space(x_train,y_train,self.nb_classes)
             
-           
+    def leave_one(self):
+        trains_idx,tests_idx = [],[]
+        for i in range(self.nb_total_sessions):
+            test_idx = list(range(i*8*self.nb_classes,(i+1)*8*self.nb_classes))
+            train_idx=[]
+            for j in range(len(self.labels)):
+                if not (j in test_idx):
+                    train_idx.append(j)
+            trains_idx.append(train_idx)
+            tests_idx.append(test_idx)
+        return trains_idx,tests_idx
+        
     def split(self,session=0,train_per_class=7,max_folds=10):
         trains_idx , tests_idx = [],[]
         sessions = list(range(self.nb_total_sessions))
@@ -275,12 +325,14 @@ class Classify():
     
     
     def accuracies(self):
-        trains_idx,tests_idx = self.split()
+        trains_idx,tests_idx = self.leave_one()
+        print("samples for train = ",len(trains_idx[0]))
+        print("samples for test  = ",len(tests_idx[0]))
         accuracies_train = []
         accuracies_test  = []
         
-        for i in range(len(trains_idx)):
-            train_idx , test_idx = trains_idx[i],tests_idx[i]
+        for train_idx , test_idx in zip(trains_idx , tests_idx):
+            
             covs_train, true_labels_train = self.listing(self.covs,self.labels,train_idx)
             classifier = self.classifier(covs_train, true_labels_train)
                 
