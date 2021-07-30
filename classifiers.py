@@ -1,4 +1,4 @@
-#from riemannian_geometry import distance_riemann, mean_riemann
+from riemannian_geometry import distance_riemann, mean_riemann
 
 import numpy as np
 from scipy import stats
@@ -8,8 +8,8 @@ from sklearn.utils.extmath import softmax
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from joblib import Parallel, delayed
-from pyriemann.utils.distance import distance_riemann
-from pyriemann.utils.mean import mean_riemann
+#from pyriemann.utils.distance import distance_riemann
+#from pyriemann.utils.mean import mean_riemann
 from riemannian_geometry import project,reverse_project,verify_SDP,mean_euclidian
 
 
@@ -45,10 +45,10 @@ class MDM(BaseEstimator, ClassifierMixin, TransformerMixin):
 
         y = np.asarray(y)
         if self.n_jobs == 1:
-            self.covmeans_ = [mean_riemann(X[y == ll]) for ll in self.classes_]
+            self.covmeans_ = [mean_riemann(X[y == ll],robustify=self.robustify) for ll in self.classes_]
         else:
             self.covmeans_ = Parallel(n_jobs=self.n_jobs)(
-                delayed(mean_riemann)(X[y == ll]) for ll in self.classes_)
+                delayed(mean_riemann)(X[y == ll],robustify=self.robustify) for ll in self.classes_)
 
         return self
 

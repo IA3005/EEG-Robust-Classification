@@ -13,9 +13,9 @@ from scipy.signal import filtfilt, butter
 import pickle
 from pyriemann.utils.distance import distance_riemann
 from pyriemann.utils.mean import mean_riemann
-from pyriemann.tangentspace import TangentSpace
+#from pyriemann.tangentspace import TangentSpace
 from estimation import covariances
-#from riemannian_geometry import mean_riemann, distance_riemann
+#from riemannian_geometry import mean_riemann, distance_riemann,project
 from itertools import combinations,product
 from tqdm import tqdm
 from sklearn.linear_model import LogisticRegression
@@ -81,9 +81,11 @@ class TrialsBuilding():
         self.frequencies= [13,17,21]
         if self.nb_classes==4:
             self.event_code = [33024,33025,33026,33027]
+            self.event_code_fif = [1,2,3,4]
             #self.names=['resting','stim13','stim21','stim17']
         else:
             self.event_code = [33025,33026,33027]
+            self.event_code_fif = [2,3,4]
             #self.names=['stim13','stim21','stim17']
         self.channels = np.array(['Oz','O1','O2','PO3','POz','PO7','PO8','PO4'])
         
@@ -121,37 +123,18 @@ class TrialsBuilding():
             if data_type=="pz":
                 boolean = (event_type[i] == 32779) and (i>0) and (event_type[i-1] in self.event_code) # start of a trial
             if data_type=="fif":
-                boolean = True
+                boolean = event_type[i] in self.event_code_fif
             if boolean: 
                 t = event_pos[i]
-                start = t + self.tmin*self.sfreq
-                stop  = t + self.tmax*self.sfreq
+                start = int(t + self.tmin*self.sfreq)
+                stop  = int(t + self.tmax*self.sfreq)
                 ext_trials.append(ext_signal[:, start:stop])
         ext_trials = np.array(ext_trials)
         ext_trials = ext_trials - np.tile(ext_trials.mean(axis=2).reshape(ext_trials.shape[0], 
                                     ext_trials.shape[1], 1), (1, 1, ext_trials.shape[2]))
         return ext_trials
     
-    def make_extended_trials_single_session_bis(self,raw_signal,event_pos,event_type,data_type):
-        raw_trials = []  
-        for i in range(len(event_type)):
-            if data_type=="pz":
-                boolean = (event_type[i] == 32779) and (i>0) and (event_type[i-1] in self.event_code) # start of a trial
-            if data_type=="fif":
-                boolean = True
-            if boolean: 
-                t = event_pos[i]
-                start = t + self.tmin*self.sfreq
-                stop  = t + self.tmax*self.sfreq
-                raw_trials.append(raw_signal[:, start:stop])
-        
-        ext_trials = np.zeros((len(raw_trials),len(self.frequencies)*raw_trials[0].shape[0],raw_trials[0].shape[1]))
-        for i in range(len(raw_trials)):
-            for j in range(len(self.frequencies)):
-                f = self.frequencies[j]
-                ext_trials[i,j*raw_trials[0].shape[0]:(j+1)*raw_trials[0].shape[0],:] = filter_bandpass(raw_trials[i], f-self.freq_band,
-                                                                                                        f+self.freq_band, fs=self.sfreq) 
-        return ext_trials
+   
     
         
     def make_labels_single_session(self,event_type,data_type):
@@ -162,8 +145,11 @@ class TrialsBuilding():
                     if e==self.event_code[i]:
                         labels.append(i)
             if data_type=="fif":
-                event_idx={1:0,2:1,3:3,4:2}  #resting = 1, 13Hz = 2, 21Hz = 3, 17Hz = 4
-                if (self.nb_classes==4) or ((self.nb_classes==3) and (e!=1)):
+                if self.nb_classes==4:
+                    event_idx={1:0,2:1,3:3,4:2}#resting = 1, 13Hz = 2, 21Hz = 3, 17Hz = 4
+                else:
+                    event_idx={2:0,3:2,4:1}
+                if (e  in self.event_code_fif):
                     labels.append(event_idx[e])
         return labels
     
@@ -194,23 +180,17 @@ class TrialsBuilding():
 
 
 
-class Covariances():
-    
-    def __init__(self,estimator,estimator_params=None):
-        self.estimator = estimator
-        self.estimator_params = estimator_params
-        
-    def transform(self,extended_trials):
-        cov_ext_trials = covariances(extended_trials, self.estimator,self.estimator_params)
-        return cov_ext_trials
-    
-    
+
 class Classify():
 
-    def __init__(self,method,covs,labels,nb_trains,nb_classes):
+    def __init__(self,method,covs,labels,nb_trains,nb_classes,with_shuffle=False, train_prop = 0.75,kfold=10,robustify=False):
         self.covs = covs #all covs , for test and trainn
         self.labels = labels
         self.method = method
+        self.robustify=robustify
+        self.with_shuffle = with_shuffle
+        self.train_prop = train_prop
+        self.kfold = kfold
         assert method in ["MDM","TangentSpace"]
         self.nb_classes = nb_classes
         self.nb_total_trials = covs.shape[0]
@@ -223,25 +203,36 @@ class Classify():
         
     def classifier(self, x_train, y_train ):
         if self.method=="MDM":
-            return MDM(x_train,y_train,self.nb_classes)
+            return MDM(x_train,y_train,self.nb_classes,robustify=self.robustify)
         if self.method=="TangentSpace":
-            return Tangent_Space(x_train,y_train,self.nb_classes)
+            return Tangent_Space(x_train,y_train,self.nb_classes,robustify=self.robustify)
             
-    def leave_one(self):
-        trains_idx,tests_idx = [],[]
-        for i in range(self.nb_total_sessions):
-            test_idx = list(range(i*8*self.nb_classes,(i+1)*8*self.nb_classes))
-            train_idx=[]
-            for j in range(len(self.labels)):
-                if not (j in test_idx):
-                    train_idx.append(j)
-            trains_idx.append(train_idx)
-            tests_idx.append(test_idx)
-        return trains_idx,tests_idx
-        
-    def split(self,session=0,train_per_class=7,max_folds=10):
+    
+    def shuffle_sessions(self):
+        idx_per_class = { k : [] for k in range(self.nb_classes)}
+        for i in range(len(self.labels)):
+            idx_per_class[self.labels[i]].append(i)
+        for k in range(self.nb_classes):
+            np.random.shuffle(idx_per_class[k]) #length=8*nb_sessions
+        shuffled_idx = []
+        nb_samples_per_class = len(idx_per_class[0])//self.nb_total_sessions #=8
+        for n in range(self.nb_total_sessions):
+            session_idx= []
+            for k in range(self.nb_classes):
+                session_idx.extend(idx_per_class[k][n*nb_samples_per_class:(n+1)*nb_samples_per_class])
+            shuffled_idx.extend(session_idx)
+        return shuffled_idx
+         
+    
+    
+    def split(self, with_shuffle=False,train_prop=0.75,kfold=5):
         trains_idx , tests_idx = [],[]
         sessions = list(range(self.nb_total_sessions))
+        
+        if with_shuffle:
+            indices = self.shuffle_sessions()
+        else:
+            indices = list(range(len(self.labels)))
         
         if (1<=self.nb_trains<self.nb_total_sessions):
             test_sessions_idx = list(combinations(sessions,self.nb_total_sessions-self.nb_trains))
@@ -249,62 +240,33 @@ class Classify():
                 test_idx , train_idx = [],[]
                 test_session_idx = test_sessions_idx[i]
                 for j in test_session_idx:
-                    test_idx.extend(list(range(j*8*self.nb_classes,(j+1)*8*self.nb_classes)))
-                for k in range(len(self.labels)):
+                    test_idx.extend(indices[j*8*self.nb_classes:(j+1)*8*self.nb_classes])
+                for k in indices:
                     if not(k in test_idx):
                         train_idx.append(k)
                 trains_idx.append(train_idx)
                 tests_idx.append(test_idx)
-            
-              
-        if self.nb_trains==0:
-            assert 0<=session<self.nb_total_sessions#session to split
-            #balanced cross_validation
-            classes_idx = { i :[] for i in range(self.nb_classes)}   
-            labels_session = self.labels[session*8*self.nb_classes:(session+1)*8*self.nb_classes]
-            for j in range(len(labels_session)) : 
-                classes_idx[labels_session[j]].append(j)
-            for i in range(max_folds):
-                train_idx, test_idx  = [],[]
-                boolean = True
-                while boolean:
-                    for c in self.nb_classes:
-                        test_idx.append(list(np.random.choice(classes_idx[c],size=8-train_per_class,replace=False)))
-                    boolean = test_idx in tests_idx
-                for j in range(self.nb_total_trials):
-                    if not(j in test_idx):
-                        train_idx.append(j)
-                trains_idx.append(train_idx)
-                tests_idx.append(test_idx)
-         
         
-        if self.nb_trains==self.nb_total_sessions:
-            assert 0<=session<self.nb_total_sessions#session to split
-            test_sessions_idx = list(combinations(sessions,self.nb_total_sessions-self.nb_trains))
-            for i in range(len(test_sessions_idx)):
-                test_idx , train_idx = [],[]
-                test_session_idx = test_sessions_idx[i]
-                for j in test_session_idx:
-                    test_idx.extend(list(range(j*8*self.nb_classes,(j+1)*8*self.nb_classes)))
-                for k in range(len(labels)):
-                    if not(k in test_idx):
-                        train_idx.append(k)
+        
+        if self.nb_trains ==0 : #then apply the split 0.75 for train and 0.25 for test + kfold cross validation
+            assert 0<train_prop<1
+            train_per_class = int(8*train_prop)
+            idx_per_class = { k : [] for k in range(self.nb_classes)}
+            for i in range(len(self.labels)):
+                idx_per_class[self.labels[i]].append(i)
+            
+            for c in range(kfold):
+                
+                test_idx,train_idx = [],[]
+                for k in range(self.nb_classes):
+                    np.random.shuffle(idx_per_class[k])
+                    train_idx.extend(idx_per_class[k][:self.nb_total_sessions*train_per_class])
+                    test_idx.extend(idx_per_class[k][self.nb_total_sessions*train_per_class:])
                 trains_idx.append(train_idx)
                 tests_idx.append(test_idx)
-            train_idx, test_idx  = [],[]
-            boolean = True
-            while boolean:
-                for c in self.nb_classes:
-                    test_idx.append(list(np.random.choice(classes_idx[c],size=8-train_per_class,replace=False)))
-                boolean = test_idx in tests_idx
-                for j in range(self.nb_total_trials):
-                    if not(j in test_idx):
-                        train_idx.append(j)
-            for i in range(self.nb_trains):
-                trains_idx[i].extend(train_idx)
-                tests_idx[i].extend(test_idx)
-             
+                
         return trains_idx,tests_idx
+    
     
     
     def listing(self,covs,labels,indices):
@@ -325,9 +287,7 @@ class Classify():
     
     
     def accuracies(self):
-        trains_idx,tests_idx = self.leave_one()
-        print("samples for train = ",len(trains_idx[0]))
-        print("samples for test  = ",len(tests_idx[0]))
+        trains_idx,tests_idx = self.split(self.with_shuffle,self.train_prop,self.kfold)
         accuracies_train = []
         accuracies_test  = []
         
@@ -351,9 +311,11 @@ class Classify():
         
 class MDM():
     
-    def __init__(self,x_train,y_train,nb_classes):
+    def __init__(self,x_train,y_train,nb_classes,robustify=False):
         self.nb_classes = nb_classes
+        self.robustify = robustify
         self.cov_centers = self.MassCenters(x_train,y_train)
+        
         
     def MassCenters(self,x_train,y_train):
         cov_centers = np.empty((self.nb_classes, x_train[0].shape[1], x_train[0].shape[1]))
@@ -363,7 +325,7 @@ class MDM():
         classes = list(range(self.nb_classes))
         y_train_bis = np.asarray(y_train)
         for i, l in enumerate(classes):
-            cov_centers[i, :, :] = mean_riemann(x_train_bis[y_train_bis==l,:,:])
+            cov_centers[i, :, :] = mean_riemann(x_train_bis[y_train_bis==l,:,:])  ######
         return cov_centers
     
     def argmin_distance(self,sample):
@@ -385,22 +347,41 @@ class MDM():
 
 class Tangent_Space():
                               
-    def __init__(self,x_train,y_train,nb_classes):
+    def __init__(self,x_train,y_train,nb_classes,reference=None,robustify=False):
         self.nb_classes = nb_classes
-        self.tangent = TangentSpace(metric='riemann')
+        self.reference = refence
         self.clf = self.ProjectedClassifier(x_train,y_train)
+        self.robustify = robustify
        
-    
-    def project(self,covs_list):
-        n_samples,size = len(covs_list),covs_list[0].shape[0]
-        covs_array = np.zeros((n_samples,size,size))
-        for i in range(n_samples):
-            covs_array[i,:,:] = covs_list[i]
-        proj_covs= self.tangent.fit_transform(covs_array)
-        return proj_covs
+    def tangent_project(self,x_train,y_train):
+        if self.reference ==None:
+            mean_cov =  np.zeros(x_train[0].shape)
+            for i in range(len(x_train)):
+                mean_cov += x_train[i]
+            mean_cov = mean_cov/len(x_train)
+            dist_to_mean_cov = [distance_riemann(mean_cov,x_train[i]) for i in range(len(x_train))]
+            dist_to_mean_cov = np.asarray(dist_mean_cov)
+            max_dist,min_dist = np.max(dist_to_mean_cov),np.min(dist_to_mean_cov)
+            
+            if robustify:
+                ########TO MODIFY########
+                threshold = (max_dist+min_dist)/2
+                self.reference = np.zeros(x_train[0].shape)
+                n = 0
+                for i in range(len(x_train)):
+                    if dist_to_mean_cov[i] < threshold:
+                        n += 1
+                        self.reference += x_train[i]
+                self.reference = self.reference/n
+            else:
+                self.reference = mean_cov
+                
+        x_train_proj = project(self.reference,x_train)
+        return x_train_proj
+        
     
     def ProjectedClassifier(self,x_train,y_train):
-        x_train_proj = self.project(x_train)
+        x_train_proj = self.tangent_project(x_train,y_train)
         clf = LogisticRegression(random_state=0).fit(x_train_proj,y_train)
         return clf
     
