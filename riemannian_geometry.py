@@ -5,14 +5,15 @@
 import numpy as np
 import scipy
 from sklearn.datasets import make_spd_matrix
-from scipy.linalg import eigvalsh
-
+from scipy.linalg import eigvalsh, eigh
+from pyriemann.utils.base import logm, sqrtm,invsqrtm,expm
+from pyriemann.utils.distance import distance_riemann
 
 
 def verify_SDP(X):
     """returns true is X is symmetric and positive matrix ie X.T=X and for u !=0, u.T@X@u > 0"""
     if np.all(X.T == X):
-        eigenvalues,_ = np.linalg.eig(X)
+        eigenvalues = eigvalsh(X)
         for x in eigenvalues:
             if x <=0:
                 return False
@@ -23,7 +24,7 @@ def verify_SDP(X):
 def verify_SSDP(X):
     """returns true is X is symmetric and positive matrix ie X.T=X and for u , u.T@X@u => 0"""
     if np.all(X.T == X):
-        eigenvalues,_ = np.linalg.eig(X)
+        eigenvalues = eigvalsh(X)
         for x in eigenvalues:
             if x <0:
                 return False
@@ -67,7 +68,7 @@ def unvectorize(v):
             k += k
     return A
 
-
+"""
 def distance_riemann(X,Y):
     eigenvalues = eigvalsh(X, Y)
     log_eigenvalues = np.log(eigenvalues)
@@ -75,35 +76,31 @@ def distance_riemann(X,Y):
     return dist
 
 def logm(X):
-    if verify_SDP(X):
-        v,w = np.linalg.eig(X)
-        diagonal_log = np.diag(np.log(v))
-        return w@diagonal_log @np.linalg.pinv(w) 
-    else:
-        return scipy.linalg.logm(X)
+    v,w = eigh(X,check_finite=False)
+    diagonal_log = np.diag(np.log(v))
+    return w@diagonal_log @np.linalg.pinv(w) 
+    
 
 def expm(X):
-    if verify_SSDP(X):
-        v,w = np.linalg.eig(X)
-        diagonal_exp = np.diag(np.exp(v))
-        return w@diagonal_exp @np.linalg.pinv(w) 
-    else:
-        return scipy.linalg.expm(X)
+    v,w = eigh(X,check_finite=False)
+    diagonal_exp = np.diag(np.exp(v))
+    return w@diagonal_exp @np.linalg.pinv(w) 
+     
     
 def sqrtm(X):
-    """returns X**(1/2)"""
+    #returns X**(1/2)
     #assert verify_SSDP(X)
-    v,w = np.linalg.eig(X)
+    v,w = eigh(X,check_finite=False)
     diagonal_sqrt = np.diag(np.sqrt(v))
     return w@diagonal_sqrt @np.linalg.pinv(w) 
     
 def invsqrtm(X):
-    """returns X**(-1/2)"""
+    #returns X**(-1/2)
     #assert verify_SDP(X)
-    v,w = np.linalg.eig(X)
+    v,w = eigh(X,check_finite=False)
     diagonal_invsqrt = np.diag(1/np.sqrt(v))
     return np.linalg.pinv(w) @diagonal_invsqrt @w
-   
+"""   
 def exp_riemann(X,Y):
     """ exp_X(Y) = X exp(X^{-1}Y) = X^{1/2} exp(X^{-1/2} Y X^{-1/2}) X^{1/2}"""
     Xsqrt = sqrtm(X)
@@ -111,7 +108,7 @@ def exp_riemann(X,Y):
     return Xsqrt@expm(Xinvsqrt@Y@Xinvsqrt)@Xsqrt
     
 def log_riemann(X,Y):
-    """ log_X(Y) = log(X^{-1}Y) = X^{1/2} log(X^{-1/2} Y X^{-1/2}) X^{1/2}"""
+    """ log_X(Y) = X log(X^{-1}Y) = X^{1/2} log(X^{-1/2} Y X^{-1/2}) X^{1/2}"""
     Xsqrt = sqrtm(X)
     Xinvsqrt = invsqrtm(X)
     return Xsqrt@logm(Xinvsqrt@Y@Xinvsqrt)@Xsqrt
@@ -120,34 +117,13 @@ def inner_riemann(X,A,B):
     invX = np.linalg.pinv(X)
     return np.matrix.trace(invX@A@invX@B)
 
-def u(x,r = 1):
-    if x < r:
-        return x
-    else:
-        return r*np.exp(r-x)
-    
-def u_prime(x,r):
-    if x < r:
-        return 1
-    else:
-        return -r*np.exp(r-x)
 
 
     
-def robust_param(covmats):
-    mean_cov = np.zeros((covmats.shape[1],covmats.shape[1]))
-    for i in range(covmats.shape[0]):
-        mean_cov += covmats[i,:,:]
-    mean_cov = mean_cov/covmats.shape[0]
-    dist_to_mean_cov = [distance_riemann(mean_cov,covmats[i,:,:]) for i in range(covmats.shape[0])]
-    dist_to_mean_cov = np.asarray(dist_to_mean_cov)
-    max_dist,min_dist = np.max(dist_to_mean_cov),np.min(dist_to_mean_cov)
-    param = (max_dist+min_dist)/2
-    return param
-    
+
    
     
-def mean_riemann(covmats, tol=10e-9, maxiter=50, init=None,robustify=False):
+def mean_riemann(covmats, tol=10e-9, maxiter=50, init=None, u_prime=lambda x : 1):
     
     Nt, Ne, Ne = covmats.shape
     if init is None:
@@ -167,9 +143,10 @@ def mean_riemann(covmats, tol=10e-9, maxiter=50, init=None,robustify=False):
 
         for i in range(Nt):
             tmp = (Cm12 @ covmats[i, :, :])@ Cm12
-            J += logm(tmp)
-            if robustify:
-                J = J* u_prime(distance_riemann(C,covmats[i,:,:])**2,r=1)
+            if type(u_prime(1))==list:
+                J += logm(tmp)* u_prime(distance_riemann(C,covmats[i,:,:])**2)[i]/Nt
+            else:
+                J += logm(tmp)* u_prime(distance_riemann(C,covmats[i,:,:])**2)/Nt
 
         crit = np.linalg.norm(J, ord='fro')
         h = nu * crit

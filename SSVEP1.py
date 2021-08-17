@@ -12,10 +12,10 @@ import gzip
 from scipy.signal import filtfilt, butter
 import pickle
 from pyriemann.utils.distance import distance_riemann
-from pyriemann.utils.mean import mean_riemann
+#from pyriemann.utils.mean import mean_riemann
 #from pyriemann.tangentspace import TangentSpace
 from estimation import covariances
-#from riemannian_geometry import mean_riemann, distance_riemann,project
+from riemannian_geometry import mean_riemann,project
 from itertools import combinations,product
 from tqdm import tqdm
 from sklearn.linear_model import LogisticRegression
@@ -183,11 +183,11 @@ class TrialsBuilding():
 
 class Classify():
 
-    def __init__(self,method,covs,labels,nb_trains,nb_classes,with_shuffle=False, train_prop = 0.75,kfold=10,robustify=False):
+    def __init__(self,method,covs,labels,nb_trains,nb_classes,with_shuffle=False, train_prop = 0.75,kfold=10,u_prime=lambda x : 1):
         self.covs = covs #all covs , for test and trainn
         self.labels = labels
         self.method = method
-        self.robustify=robustify
+        self.u_prime=u_prime
         self.with_shuffle = with_shuffle
         self.train_prop = train_prop
         self.kfold = kfold
@@ -203,9 +203,9 @@ class Classify():
         
     def classifier(self, x_train, y_train ):
         if self.method=="MDM":
-            return MDM(x_train,y_train,self.nb_classes,robustify=self.robustify)
+            return MDM(x_train,y_train,self.nb_classes,u_prime=self.u_prime)
         if self.method=="TangentSpace":
-            return Tangent_Space(x_train,y_train,self.nb_classes,robustify=self.robustify)
+            return Tangent_Space(x_train,y_train,self.nb_classes,u_prime=self.u_prime)
             
     
     def shuffle_sessions(self):
@@ -311,9 +311,9 @@ class Classify():
         
 class MDM():
     
-    def __init__(self,x_train,y_train,nb_classes,robustify=False):
+    def __init__(self,x_train,y_train,nb_classes, u_prime = lambda x : 1):
         self.nb_classes = nb_classes
-        self.robustify = robustify
+        self.u_prime = u_prime
         self.cov_centers = self.MassCenters(x_train,y_train)
         
         
@@ -325,7 +325,7 @@ class MDM():
         classes = list(range(self.nb_classes))
         y_train_bis = np.asarray(y_train)
         for i, l in enumerate(classes):
-            cov_centers[i, :, :] = mean_riemann(x_train_bis[y_train_bis==l,:,:])  ######
+            cov_centers[i, :, :] = mean_riemann(x_train_bis[y_train_bis==l,:,:],u_prime = self.u_prime)  ######
         return cov_centers
     
     def argmin_distance(self,sample):

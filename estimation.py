@@ -117,14 +117,16 @@ def huber_adaptive(X_trials, clean_prop = 0.9):
     N,n,m = X_trials.shape
     new_X_trials = []
     scms = [scm(X_trials[k,:,:]) for k in range(N)]
+    params = []
+    
     for k in range(N): # for the k^th trial
         X = X_trials[k,:,:]-mean(X_trials[k,:,:])
         all_arg = [X[:,i].T@np.linalg.pinv(scms[k])@X[:,i] for i in range(m)]
         indx = sorted(range(len(all_arg)), key=lambda k: all_arg[k])
         nb_clean_data = int(m*clean_prop)
-        param = all_arg[indx[nb_clean_data]]
-    u = lambda x : huber(x,1,param)
-    huber_covs = [m_estimator(X_trials[k,:,:],u) for k in range(N)]
+        params.append(all_arg[indx[nb_clean_data]])
+
+    huber_covs = [m_estimator(X_trials[k,:,:],lambda x : huber(x,1,params[k])) for k in range(N)]
     huber_covs = np.asarray(huber_covs)
     return huber_covs
     
@@ -138,50 +140,52 @@ def huber_non_adaptive(X_trials,q):
     return huber_covs
     
                          
-def covariances(X_trials,estimator,param = None, adaptive= True, clean_prop= 0.9, ddl = 5, labels = None):
+def covariances(X_trials,estimator, clean_prop= 0.9, ddl = 5):
     N,n,m = X_trials.shape
     
     if estimator=="scm":
         res = [scm(X_trials[k,:,:]) for k in range(N)]
-        res = np.asarray(res)
     
-    if estimator=="tyler":
-        if adaptive:
-            res = tyler_adaptive(X_trials)
-        else :
-            u = lambda x: n/x
-            res = [m_estimator(X_trials[k,:,:],u) for k in range(N)]
-            res = np.asarray(res)
-
-    if estimator=="huber":
-        if param == None:
-            if adaptive:
-                res = huber_adaptive(X_trials,clean_prop)
-            else:
-                res = huber_non_adaptive(X_trials,clean_prop)
+    if estimator=="tyler adaptive":
+        res = tyler_adaptive(X_trials)
+    
+    if estimator=="tyler normalized non adaptive":
+        u = lambda x: n/x
+        res = [m_estimator(X_trials[k,:,:],u) for k in range(N)]
+        for k in range(N):
+            det = np.linalg.det(res[k])
+            res[k] = res[k]/np.exp(np.log(det)/n)
+    
+    if estimator=="tyler non normalized non adaptive":
+        u = lambda x: n/x
+        res = [m_estimator(X_trials[k,:,:],u) for k in range(N)]
+        
+    
+    if estimator=="huber adaptive":
+        res = huber_adaptive(X_trials,clean_prop)
+         
+    if estimator=="huber non adaptive":
+        res = huber_non_adaptive(X_trials,clean_prop)
                          
     if estimator=="student":
         u = lambda x : (n + ddl/2)/(ddl/2+x)
         res = [m_estimator(X_trials[k,:,:],u) for k in range(N)]
-        res= np.asarray(res)
     
+    res= np.asarray(res)
     return res
         
 
 class Covariances(BaseEstimator, TransformerMixin):
     
-    def __init__(self, estimator='scm',param=None, adaptive = True,clean_prop = 0.9, ddl = 5):
+    def __init__(self, estimator='scm',clean_prop = 0.9, ddl = 5):
         self.estimator = estimator
-        self.param = param
-        self.adaptive = adaptive
         self.clean_prop = clean_prop
         self.ddl = ddl
 
     def fit(self, X, y=None):
-        self.labels = y
         return self
 
     def transform(self, X):
-        covmats = covariances(X, self.estimator,self.param,self.adaptive,self.clean_prop,self.ddl,self.labels)
+        covmats = covariances(X, self.estimator,self.clean_prop,self.ddl)
         return covmats
 
