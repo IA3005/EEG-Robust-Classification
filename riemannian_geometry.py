@@ -118,11 +118,6 @@ def inner_riemann(X,A,B):
     return np.matrix.trace(invX@A@invX@B)
 
 
-
-    
-
-   
-    
 def mean_riemann(covmats, tol=10e-9, maxiter=50, init=None, u_prime=lambda x : 1):
     
     Nt, Ne, Ne = covmats.shape
@@ -191,7 +186,7 @@ def reverse_project(reference,ts):
     return X
     
 
-
+    
 
              
          

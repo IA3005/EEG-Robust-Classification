@@ -1,27 +1,27 @@
-from riemannian_geometry import distance_riemann, mean_riemann
-
+from riemannian_geometry import mean_riemann
 import numpy as np
 from scipy import stats
-
 from sklearn.base import BaseEstimator, ClassifierMixin, TransformerMixin
 from sklearn.utils.extmath import softmax
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from joblib import Parallel, delayed
-#from pyriemann.utils.distance import distance_riemann
+from pyriemann.utils.distance import distance_riemann
 #from pyriemann.utils.mean import mean_riemann
-from riemannian_geometry import project,reverse_project,verify_SDP,mean_euclidian
+from riemannian_geometry import project,reverse_project,verify_SDP
+from pyriemann.utils.tangentspace import tangent_space, untangent_space
+
 
 
 class MDM(BaseEstimator, ClassifierMixin, TransformerMixin):
     """Classification by Minimum Distance to Mean.
     """
     
-    def __init__(self, n_jobs=1, robustify=False):
+    def __init__(self, n_jobs=1, u_prime=lambda x :1):
         """Init."""
         # store params for cloning purpose
         self.n_jobs = n_jobs
-        self.robustify = robustify
+        self.u_prime = u_prime
         
         
 
@@ -45,10 +45,10 @@ class MDM(BaseEstimator, ClassifierMixin, TransformerMixin):
 
         y = np.asarray(y)
         if self.n_jobs == 1:
-            self.covmeans_ = [mean_riemann(X[y == ll],robustify=self.robustify) for ll in self.classes_]
+            self.covmeans_ = [mean_riemann(X[y == ll],u_prime=self.u_prime) for ll in self.classes_]
         else:
             self.covmeans_ = Parallel(n_jobs=self.n_jobs)(
-                delayed(mean_riemann)(X[y == ll],robustify=self.robustify) for ll in self.classes_)
+                delayed(mean_riemann)(X[y == ll],u_prime=self.u_prime) for ll in self.classes_)
 
         return self
 
@@ -117,38 +117,45 @@ class MDM(BaseEstimator, ClassifierMixin, TransformerMixin):
         return softmax(-self._predict_distances(X)**2)
 
 
+    
 class TangentSpace(BaseEstimator, TransformerMixin):
-
-    """Tangent space project TransformerMixin.
-    """
-
-    def __init__(self,reference=None,robustify=False):
-        self.reference= reference
-        self.robustify = robustify
+    
+    def __init__(self, tsupdate=False, u_prime = lambda x:1):
+        self.tsupdate = tsupdate
+        self.u_prime = u_prime
 
     def fit(self, X, y=None):
-        """Fit (estimates) the reference point.
-        Parameters
-        ----------
-        X : ndarray, shape (n_trials, n_channels, n_channels)
-            ndarray of SPD matrices.
-        y : ndarray | None (default None)
-            Not used, here for compatibility with sklearn API.
-        sample_weight : ndarray | None (default None)
-            weight of each sample.
-        Returns
-        -------
-        self : TangentSpace instance
-            The TangentSpace instance.
-        """
         # compute mean covariance
-        if self.reference == None:
-            self.reference = mean_euclidian(X,self.robustify)
-        else: 
-            assert verify_SDP(self.reference),"The given reference point is not SDP"
+        self.reference_ = mean_riemann(X ,u_prime=self.u_prime)
         return self
 
-    
+    def _check_data_dim(self, X):
+        """Check data shape and return the size of cov mat."""
+        shape_X = X.shape
+        if len(X.shape) == 2:
+            Ne = (np.sqrt(1 + 8 * shape_X[1]) - 1) / 2
+            if Ne != int(Ne):
+                raise ValueError("Shape of Tangent space vector does not"
+                                 " correspond to a square matrix.")
+            return int(Ne)
+        elif len(X.shape) == 3:
+            if shape_X[1] != shape_X[2]:
+                raise ValueError("Matrices must be square")
+            return int(shape_X[1])
+        else:
+            raise ValueError("Shape must be of len 2 or 3.")
+
+    def _check_reference_points(self, X):
+        """Check reference point status, and force it to identity if not."""
+        if not hasattr(self, 'reference_'):
+            self.reference_ = np.eye(self._check_data_dim(X))
+        else:
+            shape_cr = self.reference_.shape[0]
+            shape_X = self._check_data_dim(X)
+
+            if shape_cr != shape_X:
+                raise ValueError('Data must be same size of reference point.')
+
     def transform(self, X):
         """Tangent space projection.
         Parameters
@@ -160,9 +167,30 @@ class TangentSpace(BaseEstimator, TransformerMixin):
         ts : ndarray, shape (n_trials, n_ts)
             the tangent space projection of the matrices.
         """
-        ts  = project(self.reference,X)
-        return ts
+        self._check_reference_points(X)
+        if self.tsupdate:
+            Cr = mean_riemann(X ,u_prime=self.u_prime)
+        else:
+            Cr = self.reference_
+        return tangent_space(X, Cr)
 
+    def fit_transform(self, X, y=None):
+        """Fit and transform in a single function.
+        Parameters
+        ----------
+        X : ndarray, shape (n_trials, n_channels, n_channels)
+            ndarray of SPD matrices.
+        y : ndarray | None (default None)
+            Not used, here for compatibility with sklearn API.
+        Returns
+        -------
+        ts : ndarray, shape (n_trials, n_ts)
+            the tangent space projection of the matrices.
+        """
+        # compute mean covariance
+        self._check_reference_points(X)
+        self.reference_ = mean_riemann(X ,u_prime=self.u_prime)
+        return tangent_space(X, self.reference_)
 
     def inverse_transform(self, X, y=None):
         """Inverse transform.
@@ -178,67 +206,5 @@ class TangentSpace(BaseEstimator, TransformerMixin):
         cov : ndarray, shape (n_trials, n_channels, n_channels)
             the covariance matrices corresponding to each of tangent vector.
         """
-        return reverse_project(self.reference,X)
-
-    
-
-class TSclassifier(BaseEstimator, ClassifierMixin):
-
-    """Classification in the tangent space.
-    """
-
-    def __init__(self,clf=LogisticRegression(),reference=None,robustify=False):
-        """Init."""
-        self.robustify = robustify
-        self.reference = reference
-        self.clf = clf
-
-        if not isinstance(clf, ClassifierMixin):
-            raise TypeError('clf must be a ClassifierMixin')
-
-    def fit(self, X, y):
-        """Fit TSclassifier.
-        Parameters
-        ----------
-        X : ndarray, shape (n_trials, n_channels, n_channels)
-            ndarray of SPD matrices.
-        y : ndarray shape (n_trials, 1)
-            labels corresponding to each trial.
-        Returns
-        -------
-        self : TSclassifier. instance
-            The TSclassifier. instance.
-        """
-        self.classes_ = np.unique(y)
-        ts = TangentSpace(reference=self.reference,robustify=self.robustify)
-        self._pipe = make_pipeline(ts, self.clf)
-        self._pipe.fit(X, y)
-        return self
-
-    def predict(self, X):
-        """get the predictions.
-        Parameters
-        ----------
-        X : ndarray, shape (n_trials, n_channels, n_channels)
-            ndarray of SPD matrices.
-        Returns
-        -------
-        pred : ndarray of int, shape (n_trials, 1)
-            the prediction for each trials according to the closest centroid.
-        """
-        return self._pipe.predict(X)
-
-    def predict_proba(self, X):
-        """get the probability.
-        Parameters
-        ----------
-        X : ndarray, shape (n_trials, n_channels, n_channels)
-            ndarray of SPD matrices.
-        Returns
-        -------
-        pred : ndarray of ifloat, shape (n_trials, n_classes)
-            the prediction for each trials according to the closest centroid.
-        """
-        return self._pipe.predict_proba(X)
-
-
+        self._check_reference_points(X)
+        return untangent_space(X, self.reference_)

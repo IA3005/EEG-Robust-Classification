@@ -108,6 +108,7 @@ class TrialsBuilding():
             event_pos = events.T[0]
             event_type = events.T[2]
             data_type = "fif"
+           
         return raw_signal,event_pos,event_type,data_type
     
     
@@ -347,34 +348,15 @@ class MDM():
 
 class Tangent_Space():
                               
-    def __init__(self,x_train,y_train,nb_classes,reference=None,robustify=False):
+    def __init__(self,x_train,y_train,nb_classes,reference=None,u_prime=lambda x:1):
         self.nb_classes = nb_classes
         self.reference = refence
         self.clf = self.ProjectedClassifier(x_train,y_train)
-        self.robustify = robustify
+        self.u_prime = u_prime
        
     def tangent_project(self,x_train,y_train):
         if self.reference ==None:
-            mean_cov =  np.zeros(x_train[0].shape)
-            for i in range(len(x_train)):
-                mean_cov += x_train[i]
-            mean_cov = mean_cov/len(x_train)
-            dist_to_mean_cov = [distance_riemann(mean_cov,x_train[i]) for i in range(len(x_train))]
-            dist_to_mean_cov = np.asarray(dist_mean_cov)
-            max_dist,min_dist = np.max(dist_to_mean_cov),np.min(dist_to_mean_cov)
-            
-            if robustify:
-                ########TO MODIFY########
-                threshold = (max_dist+min_dist)/2
-                self.reference = np.zeros(x_train[0].shape)
-                n = 0
-                for i in range(len(x_train)):
-                    if dist_to_mean_cov[i] < threshold:
-                        n += 1
-                        self.reference += x_train[i]
-                self.reference = self.reference/n
-            else:
-                self.reference = mean_cov
+            self.reference = mean_riemann(np.asarray(x_train),u_prime = self.u_prime)
                 
         x_train_proj = project(self.reference,x_train)
         return x_train_proj
@@ -385,8 +367,8 @@ class Tangent_Space():
         clf = LogisticRegression(random_state=0).fit(x_train_proj,y_train)
         return clf
     
-    def predict(self,x):
-        x_proj = self.project(x)
+    def predict(self,x,y):
+        x_proj = self.tangent_project(x,y)
         return self.clf.predict(x_proj)
         
 
