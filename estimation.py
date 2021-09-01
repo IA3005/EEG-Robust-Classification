@@ -25,7 +25,7 @@ def mean(X):
     #Y = np.expand_dims(np.mean(X,axis=1),axis=1)@np.ones((1,X.shape[1])
     return Y
     
-def m_estimator(X,u,threshold=1e-10,max_iter=500,normalize=True):
+def m_estimator(X,u,threshold=1e-6,max_iter=20,normalize=True):
     #for mle : u(x) = 1
     #for tyler: u(x) = n/x ## add power information
     #for huber of parameter r : u(x) = k if (|x|<r) ;else kr/|x|
